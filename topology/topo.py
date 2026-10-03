@@ -8,7 +8,7 @@ def build():
     net = Mininet(controller=None,
                   switch=lambda name, **kw: OVSSwitch(name, protocols="OpenFlow13", **kw))
 
-    c0 = net.addController("c0", controller=RemoteController, ip="127.0.0.1", port=6633)
+    c0 = net.addController("c0", controller=RemoteController, ip="127.0.0.1", port=6653)
 
     h1 = net.addHost("h1", ip="10.0.0.1/24")
     h2 = net.addHost("h2", ip="10.0.0.2/24")
@@ -32,7 +32,7 @@ def build():
     net.addLink(s3, s5)
 
     net.start()
-    print("Topology up. Controller must be running at 127.0.0.1:6633")
+    print("Topology up. Controller must be running at 127.0.0.1:6653")
     CLI(net)
     net.stop()
 
