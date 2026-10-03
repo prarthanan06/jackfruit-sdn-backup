@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+received_files/
+*.log
