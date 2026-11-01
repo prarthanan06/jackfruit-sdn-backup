@@ -9,3 +9,10 @@ received_files/
 results.csv
 __pycache__/
 *.pyc
+
+# Local test artifacts
+large.bin
+received_files/
+results.csv
+__pycache__/
+*.pyc
