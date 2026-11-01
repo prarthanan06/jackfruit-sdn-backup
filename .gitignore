@@ -2,3 +2,10 @@ __pycache__/
 *.pyc
 received_files/
 *.log
+
+# Local test artifacts
+large.bin
+received_files/
+results.csv
+__pycache__/
+*.pyc
