@@ -1,4 +1,5 @@
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -21,6 +22,51 @@ def calculate_file_sha256(path):
             digest.update(block)
 
     return digest.digest()
+
+
+def append_result(
+    filename,
+    server,
+    file_size,
+    total_chunks,
+    transfer_time,
+    throughput_mbps,
+    retransmissions,
+    recovery_time,
+):
+    results_path = "results.csv"
+    file_exists = os.path.exists(results_path)
+
+    with open(
+        results_path,
+        "a",
+        newline="",
+        encoding="utf-8",
+    ) as file_obj:
+        writer = csv.writer(file_obj)
+
+        if not file_exists:
+            writer.writerow([
+                "filename",
+                "server",
+                "file_size_bytes",
+                "total_chunks",
+                "transfer_time_seconds",
+                "throughput_mbps",
+                "retransmissions",
+                "recovery_time_seconds",
+            ])
+
+        writer.writerow([
+            filename,
+            server,
+            file_size,
+            total_chunks,
+            f"{transfer_time:.6f}",
+            f"{throughput_mbps:.6f}",
+            retransmissions,
+            f"{recovery_time:.6f}",
+        ])
 
 
 def connect_and_initialize(
@@ -64,7 +110,9 @@ def connect_and_initialize(
 
     if response["type"] != MISSING:
         sock.close()
-        raise RuntimeError("server did not return missing chunks")
+        raise RuntimeError(
+            "server did not return missing chunks"
+        )
 
     missing = json.loads(
         response["payload"].decode("utf-8")
@@ -80,6 +128,7 @@ def send_file(
     corrupt_chunk=None,
     transfer_id=None,
     stop_after=None,
+    delay_ms=0,
 ):
     if transfer_id is None:
         transfer_id = uuid.uuid4().hex
@@ -92,9 +141,12 @@ def send_file(
     filename = os.path.basename(path)
     whole_digest = calculate_file_sha256(path)
 
-    print(
-        f"Transfer ID: {transfer_id}"
-    )
+    start_time = time.perf_counter()
+    retransmissions = 0
+    total_recovery_time = 0.0
+    failure_time = None
+
+    print(f"Transfer ID: {transfer_id}")
     print(
         f"File: {filename}, size: {size} bytes, "
         f"chunks: {total}"
@@ -116,8 +168,15 @@ def send_file(
                 total,
             )
 
+            if failure_time is not None:
+                total_recovery_time += (
+                    time.perf_counter() - failure_time
+                )
+                failure_time = None
+
             print(
-                f"Server reports {len(missing)} missing chunks"
+                f"Server reports {len(missing)} "
+                "missing chunks"
             )
 
             with open(path, "rb") as file_obj:
@@ -146,7 +205,7 @@ def send_file(
                             corruption_used = True
 
                             print(
-                                f"Deliberately corrupting "
+                                "Deliberately corrupting "
                                 f"chunk {chunk_no}"
                             )
 
@@ -175,11 +234,14 @@ def send_file(
                                 "unexpected chunk response"
                             )
 
+                        retransmissions += 1
+
                         print(
                             f"Chunk {chunk_no}: NACK; "
                             f"retry {attempt}/"
                             f"{MAX_CHUNK_RETRIES}"
                         )
+
                     else:
                         raise RuntimeError(
                             f"chunk {chunk_no} failed after "
@@ -187,6 +249,9 @@ def send_file(
                         )
 
                     chunks_sent_this_run += 1
+
+                    if delay_ms > 0:
+                        time.sleep(delay_ms / 1000.0)
 
                     if (
                         stop_after is not None
@@ -212,16 +277,56 @@ def send_file(
             response = recv_msg(sock)
 
             if response["type"] == ACK:
+                elapsed = (
+                    time.perf_counter() - start_time
+                )
+
+                throughput_mbps = 0.0
+
+                if elapsed > 0:
+                    throughput_mbps = (
+                        size * 8
+                    ) / elapsed / 1_000_000
+
                 print(
                     "Transfer complete; "
                     "whole-file checksum verified"
                 )
+                print(
+                    f"Transfer time: "
+                    f"{elapsed:.3f} seconds"
+                )
+                print(
+                    f"Throughput: "
+                    f"{throughput_mbps:.3f} Mbps"
+                )
+                print(
+                    f"Retransmissions: "
+                    f"{retransmissions}"
+                )
+                print(
+                    f"Recovery time: "
+                    f"{total_recovery_time:.3f} seconds"
+                )
+
+                append_result(
+                    filename=filename,
+                    server=f"{host}:{port}",
+                    file_size=size,
+                    total_chunks=total,
+                    transfer_time=elapsed,
+                    throughput_mbps=throughput_mbps,
+                    retransmissions=retransmissions,
+                    recovery_time=total_recovery_time,
+                )
+
                 sock.close()
                 return
 
             print(
                 "Server did not confirm completion. "
-                "The next attempt will query missing chunks."
+                "The next attempt will query missing "
+                "chunks."
             )
 
         except (
@@ -230,11 +335,10 @@ def send_file(
             socket.timeout,
             OSError,
         ) as error:
+            failure_time = time.perf_counter()
             reconnect_count += 1
 
-            print(
-                f"Connection lost: {error}"
-            )
+            print(f"Connection lost: {error}")
             print(
                 f"Reconnecting "
                 f"({reconnect_count}/{MAX_RECONNECTS})..."
@@ -261,8 +365,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("file")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=5000)
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=5000,
+    )
     parser.add_argument(
         "--corrupt",
         type=int,
@@ -280,6 +391,12 @@ if __name__ == "__main__":
         default=None,
         help="stop after this many chunks; testing only",
     )
+    parser.add_argument(
+        "--delay-ms",
+        type=float,
+        default=0,
+        help="delay after each acknowledged chunk",
+    )
 
     args = parser.parse_args()
 
@@ -290,4 +407,5 @@ if __name__ == "__main__":
         args.corrupt,
         args.transfer_id,
         args.stop_after,
+        args.delay_ms,
     )
