@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SDN Backup Network Dashboard</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1d2330; --muted: #6a7385; --border: #dfe3ea;
+    --ok: #1f9d55; --bad: #d64545; --warn: #d98a0b; --path: #2563eb; --alt: #8b5cf6;
+    --node-fill: #ffffff; --host: #8a93a6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #11151c; --card: #1a202b; --text: #e6e9ef; --muted: #98a2b6; --border: #2a3342;
+      --ok: #3ccf7c; --bad: #ff6b6b; --warn: #f2a93b; --path: #5b9bff; --alt: #a78bfa;
+      --node-fill: #1a202b; --host: #6f7a90;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 16px 24px; display: flex; align-items: center; justify-content: space-between;
+           flex-wrap: wrap; gap: 8px; }
+  h1 { font-size: 20px; margin: 0; }
+  .conn { font-size: 13px; color: var(--muted); }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px;
+         background: var(--bad); vertical-align: middle; }
+  .dot.live { background: var(--ok); }
+  main { padding: 0 24px 24px; display: grid; gap: 16px; max-width: 1200px; margin: 0 auto; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .card h2 { font-size: 13px; font-weight: 600; color: var(--muted); margin: 0 0 6px;
+             text-transform: uppercase; letter-spacing: .04em; }
+  .big { font-size: 30px; font-weight: 700; }
+  .big small { font-size: 15px; color: var(--muted); font-weight: 500; }
+  .big.ok { color: var(--ok); } .big.bad { color: var(--bad); }
+  .row { display: grid; grid-template-columns: 1.5fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+  svg { width: 100%; height: auto; display: block; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+  .legend i { display: inline-block; width: 22px; height: 0; border-top: 4px solid; vertical-align: middle; margin-right: 5px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 4px 6px 8px; }
+  td { padding: 8px 6px; border-top: 1px solid var(--border); vertical-align: top; }
+  tr.sel td { background: color-mix(in srgb, var(--path) 10%, transparent); }
+  tr.clickable { cursor: pointer; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; color: #fff; }
+  .pill.NORMAL { background: var(--ok); } .pill.REROUTED { background: var(--warn); }
+  .pill.NOPATH { background: var(--bad); }
+  .alt { color: var(--muted); font-size: 13px; }
+  ul.events { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow: auto; font-size: 13.5px; }
+  ul.events li { padding: 5px 0; border-top: 1px solid var(--border); }
+  ul.events li:first-child { border-top: 0; }
+  .t { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 8px; }
+  .lv-ok { color: var(--ok); } .lv-bad { color: var(--bad); } .lv-warn { color: var(--warn); }
+  .empty { color: var(--muted); font-size: 14px; }
+  .hint { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SDN Backup Network Dashboard</h1>
+  <div class="conn"><span id="dot" class="dot"></span><span id="conn">Connecting...</span></div>
+</header>
+
+<main>
+  <section class="cards">
+    <div class="card"><h2>Switches up</h2><div class="big" id="sw">-</div></div>
+    <div class="card"><h2>Links up</h2><div class="big" id="ln">-</div></div>
+    <div class="card"><h2>Paths rerouted</h2><div class="big" id="rr">-</div></div>
+    <div class="card"><h2>Paths with no route</h2><div class="big" id="np">-</div></div>
+  </section>
+
+  <section class="row">
+    <div class="card">
+      <h2>Topology</h2>
+      <svg id="topo" viewBox="0 0 900 440" role="img" aria-label="Network topology"></svg>
+      <div class="legend">
+        <span><i style="border-color: var(--ok)"></i>link up</span>
+        <span><i style="border-color: var(--bad); border-top-style: dashed"></i>link down</span>
+        <span><i style="border-color: var(--path)"></i>selected path in use</span>
+        <span><i style="border-color: var(--alt); border-top-style: dashed"></i>alternate path</span>
+      </div>
+      <div class="hint">Click a row in the path table to highlight it here.</div>
+    </div>
+
+    <div class="card">
+      <h2>Recent events</h2>
+      <ul class="events" id="events"></ul>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Client to backup-server paths</h2>
+    <table>
+      <thead><tr><th>Transfer</th><th>Status</th><th>Path in use</th><th>Normal path</th><th>Alternates</th></tr></thead>
+      <tbody id="paths"></tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+(function () {
+  var NS = "http://www.w3.org/2000/svg";
+  // Positions of switches and hosts on the drawing (edit if the topology changes).
+  var POS = { 1: [250, 220], 2: [450, 90], 3: [450, 350], 4: [650, 150], 5: [650, 290] };
+  var HPOS = { h1: [70, 140], h2: [70, 300], h3: [830, 150], h4: [830, 290] };
+  var selected = null;
+  var lastData = null;
+
+  function el(name, attrs, text) {
+    var e = document.createElementNS(NS, name);
+    for (var k in attrs) { e.setAttribute(k, attrs[k]); }
+    if (text !== undefined) { e.textContent = text; }
+    return e;
+  }
+  function pname(p) { return p ? p.map(function (d) { return "s" + d; }).join(" \u2192 ") : "none"; }
+  function key(a, b) { return a < b ? a + "-" + b : b + "-" + a; }
+  function pairKey(p) { return p.client + ">" + p.server; }
+
+  function pathEdges(path) {
+    var set = {};
+    if (path) { for (var i = 0; i < path.length - 1; i++) { set[key(path[i], path[i + 1])] = true; } }
+    return set;
+  }
+
+  function drawTopology(d) {
+    var svg = document.getElementById("topo");
+    while (svg.firstChild) { svg.removeChild(svg.firstChild); }
+    var sel = null;
+    d.paths.forEach(function (p) { if (pairKey(p) === selected) { sel = p; } });
+    var inUse = pathEdges(sel && sel.current);
+    var alt = {};
+    if (sel) { sel.alternates.forEach(function (a) { var e = pathEdges(a); for (var k in e) { alt[k] = true; } }); }
+
+    // host links
+    d.hosts.forEach(function (h) {
+      var a = HPOS[h.name], b = POS[h.switch];
+      if (!a || !b) { return; }
+      svg.appendChild(el("line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1],
+        stroke: "var(--host)", "stroke-width": 2, "stroke-opacity": 0.6 }));
+    });
+
+    // switch links
+    d.links.forEach(function (l) {
+      var a = POS[l.a], b = POS[l.b];
+      if (!a || !b) { return; }
+      var k = key(l.a, l.b);
+      var color = l.up ? "var(--ok)" : "var(--bad)";
+      var width = 3, dash = l.up ? "" : "7 6";
+      if (l.up && alt[k] && !inUse[k]) { color = "var(--alt)"; dash = "8 6"; width = 4; }
+      svg.appendChild(el("line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1],
+        stroke: color, "stroke-width": width, "stroke-dasharray": dash, "stroke-linecap": "round" }));
+    });
+    // selected path drawn on top
+    d.links.forEach(function (l) {
+      var k = key(l.a, l.b);
+      if (!inUse[k]) { return; }
+      var a = POS[l.a], b = POS[l.b];
+      svg.appendChild(el("line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1],
+        stroke: "var(--path)", "stroke-width": 7, "stroke-opacity": 0.85, "stroke-linecap": "round" }));
+    });
+    // host-edge segments of the selected pair
+    if (sel) {
+      [sel.client, sel.server].forEach(function (name) {
+        var h = d.hosts.filter(function (x) { return x.name === name; })[0];
+        if (!h || !HPOS[name] || !POS[h.switch]) { return; }
+        svg.appendChild(el("line", { x1: HPOS[name][0], y1: HPOS[name][1],
+          x2: POS[h.switch][0], y2: POS[h.switch][1], stroke: "var(--path)",
+          "stroke-width": 5, "stroke-opacity": 0.85, "stroke-linecap": "round" }));
+      });
+    }
+
+    // switches
+    d.switches.forEach(function (s) {
+      var p = POS[s.id];
+      if (!p) { return; }
+      var color = s.up ? "var(--ok)" : "var(--bad)";
+      svg.appendChild(el("circle", { cx: p[0], cy: p[1], r: 28, fill: "var(--node-fill)",
+        stroke: color, "stroke-width": 5 }));
+      svg.appendChild(el("text", { x: p[0], y: p[1] + 5, "text-anchor": "middle",
+        "font-size": 16, "font-weight": 700, fill: "var(--text)" }, s.name));
+      svg.appendChild(el("text", { x: p[0], y: p[1] + 48, "text-anchor": "middle",
+        "font-size": 12, fill: color, "font-weight": 600 }, s.up ? "UP" : "DOWN"));
+    });
+
+    // hosts
+    d.hosts.forEach(function (h) {
+      var p = HPOS[h.name];
+      if (!p) { return; }
+      var color = h.up ? "var(--host)" : "var(--bad)";
+      svg.appendChild(el("rect", { x: p[0] - 26, y: p[1] - 20, width: 52, height: 40, rx: 8,
+        fill: "var(--node-fill)", stroke: color, "stroke-width": 3 }));
+      svg.appendChild(el("text", { x: p[0], y: p[1] + 5, "text-anchor": "middle",
+        "font-size": 15, "font-weight": 700, fill: "var(--text)" }, h.name));
+      svg.appendChild(el("text", { x: p[0], y: p[1] + 38, "text-anchor": "middle",
+        "font-size": 11.5, fill: "var(--muted)" }, h.role === "server" ? "backup server" : "client"));
+    });
+  }
+
+  function render(d) {
+    lastData = d;
+    var s = d.summary;
+    var rr = d.paths.filter(function (p) { return p.status === "REROUTED"; }).length;
+    var np = d.paths.filter(function (p) { return p.status === "NO PATH"; }).length;
+
+    function setBig(id, up, total, cls) {
+      var e = document.getElementById(id);
+      e.className = "big " + cls;
+      e.textContent = "";
+      e.appendChild(document.createTextNode(String(up)));
+      if (total !== null) {
+        var sm = document.createElement("small");
+        sm.textContent = " / " + total;
+        e.appendChild(sm);
+      }
+    }
+    setBig("sw", s.switches_up, s.switches_total, s.switches_up === s.switches_total ? "ok" : "bad");
+    setBig("ln", s.links_up, s.links_total, s.links_up === s.links_total ? "ok" : "bad");
+    setBig("rr", rr, null, rr ? "bad" : "ok");
+    setBig("np", np, null, np ? "bad" : "ok");
+
+    if (!selected && d.paths.length) { selected = pairKey(d.paths[0]); }
+
+    var tb = document.getElementById("paths");
+    tb.textContent = "";
+    d.paths.forEach(function (p) {
+      var tr = document.createElement("tr");
+      tr.className = "clickable" + (pairKey(p) === selected ? " sel" : "");
+      tr.addEventListener("click", function () { selected = pairKey(p); render(lastData); });
+      function td(text) { var c = document.createElement("td"); c.textContent = text; tr.appendChild(c); return c; }
+      td(p.client + " \u2192 " + p.server);
+      var st = document.createElement("td");
+      var pill = document.createElement("span");
+      pill.className = "pill " + p.status.replace(" ", "");
+      pill.textContent = p.status;
+      st.appendChild(pill);
+      tr.appendChild(st);
+      td(pname(p.current));
+      td(pname(p.normal));
+      var alts = td(p.alternates.length ? p.alternates.map(pname).join("   |   ") : "none");
+      alts.className = "alt";
+      tb.appendChild(tr);
+    });
+
+    var ev = document.getElementById("events");
+    ev.textContent = "";
+    if (!d.events.length) {
+      var li0 = document.createElement("li");
+      li0.className = "empty";
+      li0.textContent = "No events yet.";
+      ev.appendChild(li0);
+    }
+    d.events.forEach(function (e) {
+      var li = document.createElement("li");
+      var t = document.createElement("span");
+      t.className = "t";
+      t.textContent = e.t;
+      var m = document.createElement("span");
+      m.className = "lv-" + e.level;
+      m.textContent = e.msg;
+      li.appendChild(t);
+      li.appendChild(m);
+      ev.appendChild(li);
+    });
+
+    drawTopology(d);
+  }
+
+  function setConn(ok, text) {
+    document.getElementById("dot").className = "dot" + (ok ? " live" : "");
+    document.getElementById("conn").textContent = text;
+  }
+
+  function poll() {
+    fetch("/api/status", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        setConn(d.connected, d.connected ? "Live, updated " + d.time : "Waiting for the controller...");
+        render(d);
+      })
+      .catch(function () { setConn(false, "Cannot reach the controller"); });
+  }
+  poll();
+  setInterval(poll, 1000);
+})();
+</script>
+</body>
+</html>
