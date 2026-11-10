@@ -14,11 +14,17 @@ from ryu.lib.packet import (
 from ryu.topology import event
 from ryu.topology.api import get_switch, get_link
 import networkx as nx
+import os
 
 
 FLOW_COOKIE = 0x1
 FLOW_PRIORITY = 10
 IDLE_TIMEOUT = 30
+
+REROUTE_ON_FAILURE = os.getenv(
+    "SDN_REROUTE",
+    "1",
+).lower() not in {"0", "false", "no"}
 
 
 class SDNBackupController(app_manager.RyuApp):
@@ -136,11 +142,17 @@ class SDNBackupController(app_manager.RyuApp):
         self.rebuild_topology()
 
         if isinstance(ev, event.EventLinkDelete):
-            self.logger.warning(
-                "LINK_FAILURE detected; "
-                "flushing path flows"
-            )
-            self.flush_flows()
+            self.logger.warning("LINK_FAILURE detected")
+
+            if REROUTE_ON_FAILURE:
+                self.logger.warning(
+                    "REROUTING enabled; flushing path flows"
+                )
+                self.flush_flows()
+            else:
+                self.logger.warning(
+                    "REROUTING disabled; baseline mode"
+                )
 
         elif isinstance(ev, event.EventSwitchLeave):
             self.logger.warning(
