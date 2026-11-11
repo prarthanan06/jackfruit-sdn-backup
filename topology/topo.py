@@ -1,7 +1,11 @@
 from mininet.net import Mininet
-from mininet.node import RemoteController, OVSSwitch
+from mininet.node import RemoteController, OVSSwitch, Node
 from mininet.cli import CLI
 from mininet.log import setLogLevel
+
+# Address the Mininet hosts use to reach the SDN controller's web API
+# (the dashboard and /api/request_path run in the controller process).
+CONTROLLER_API_IP = "10.0.0.254"
 
 
 def build():
@@ -31,8 +35,17 @@ def build():
     net.addLink(s3, s4)
     net.addLink(s3, s5)
 
+    # Hosts live in their own network namespaces, so they cannot reach the
+    # controller on 127.0.0.1. This link puts the controller's machine on the
+    # s1 network (10.0.0.254) so that clients can call its web API through the
+    # SDN switches. It is added last, so it does not change any other port.
+    api = Node("api", inNamespace=False)
+    api_intf = net.addLink(api, s1).intf1
+    api.setIP(CONTROLLER_API_IP + "/24", intf=api_intf)
+
     net.start()
     print("Topology up. Controller must be running at 127.0.0.1:6653")
+    print("Controller web API for hosts: http://%s:8080" % CONTROLLER_API_IP)
     CLI(net)
     net.stop()
 

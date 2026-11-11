@@ -43,6 +43,9 @@ HOSTS = {
     "h4": (5, "server"),
 }
 
+# host name -> port number on its switch (used to pre-install flow rules)
+HOST_PORT = {"h1": 1, "h2": 2, "h3": 1, "h4": 1}
+
 HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
 MAX_EVENTS = 60
 MAX_ALTERNATES = 2
@@ -71,6 +74,7 @@ class DashboardState:
         self.last_path = {}     # (client, server) -> last displayed path (or None)
         self.events = deque(maxlen=MAX_EVENTS)
         self.has_data = False
+        self.active = None      # (client, server) of the latest transfer request
 
     # -- events -------------------------------------------------------------
     def log(self, level, msg):
@@ -207,6 +211,7 @@ class DashboardState:
         return {
             "time": time.strftime("%H:%M:%S"),
             "connected": self.has_data,
+            "active": ("%s>%s" % self.active) if self.active else None,
             "summary": {
                 "switches_up": sum(1 for s in switches if s["up"]),
                 "switches_total": len(switches),
@@ -228,6 +233,62 @@ class DashboardApp(app_manager.RyuApp):
         wsgi.register(DashboardWeb, {"app": self})
         hub.spawn(self._loop)
         self.logger.info("Dashboard on http://localhost:8080/")
+
+    # -- application <-> SDN integration ------------------------------------
+    def _host_mac(self, ctrl, name):
+        """MAC the controller learned for a host (found via its switch + port)."""
+        location = (HOSTS[name][0], HOST_PORT[name])
+        for mac, loc in list(ctrl.hosts.items()):
+            if loc == location:
+                return mac
+        return None
+
+    def handle_request(self, src, dst):
+        """A client announces a transfer; pick a path and pre-install its flows."""
+        if (src not in HOSTS or dst not in HOSTS
+                or HOSTS[src][1] != "client" or HOSTS[dst][1] != "server"):
+            return 400, {"ok": False, "error": "src must be a client (h1,h2) "
+                                               "and dst a backup server (h3,h4)"}
+        label = "%s -> %s" % (src, dst)
+        path = self.state.last_path.get((src, dst))
+        if not self.state.has_data or path is None:
+            self.state.log("bad", "%s: transfer requested but NO PATH is available" % label)
+            self.logger.warning("TRANSFER_REQUEST %s no path", label)
+            return 503, {"ok": False, "error": "no path available"}
+
+        installed, note = False, ""
+        ctrl = app_manager.lookup_service_brick(CONTROLLER_APP_NAME)
+        src_mac = self._host_mac(ctrl, src) if ctrl else None
+        dst_mac = self._host_mac(ctrl, dst) if ctrl else None
+        if ctrl and src_mac and dst_mac:
+            ctrl.install_path(path, src_mac, dst_mac, HOST_PORT[dst])
+            ctrl.install_path(list(reversed(path)), dst_mac, src_mac, HOST_PORT[src])
+            installed = True
+        else:
+            note = ("host addresses not learned yet (run pingall once); "
+                    "the controller will install flows on the first packet instead")
+
+        self.state.active = (src, dst)
+        self.state.log("ok" if installed else "warn",
+                       "%s: app requested a path; controller chose %s; flows %s"
+                       % (label, _pname(path),
+                          "pre-installed" if installed else "not pre-installed yet"))
+        self.logger.info("TRANSFER_REQUEST %s path=%s flows_installed=%s",
+                         label, _pname(path), installed)
+        return 200, {"ok": True, "src": src, "dst": dst,
+                     "path": ["s%d" % d for d in path], "path_ids": path,
+                     "flows_installed": installed, "note": note}
+
+    def handle_report(self, src, dst, status, seconds, size):
+        label = "%s -> %s" % (src, dst)
+        if status == "ok":
+            self.state.log("ok", "%s: transfer complete (%s bytes in %s s)"
+                           % (label, size, seconds))
+        else:
+            self.state.log("bad", "%s: transfer FAILED after %s s" % (label, seconds))
+        self.logger.info("TRANSFER_REPORT %s status=%s seconds=%s bytes=%s",
+                         label, status, seconds, size)
+        return 200, {"ok": True}
 
     def _loop(self):
         while True:
@@ -251,6 +312,25 @@ class DashboardWeb(ControllerBase):
             body = f.read()
         return Response(content_type="text/html", charset="utf-8", body=body,
                         headers={"Cache-Control": "no-store"})
+
+    def _json(self, code, payload):
+        return Response(status=code, content_type="application/json",
+                        body=json.dumps(payload).encode("utf-8"),
+                        headers={"Cache-Control": "no-store"})
+
+    @route("request_path", "/api/request_path", methods=["GET"])
+    def request_path(self, req, **kwargs):
+        code, payload = self.app.handle_request(req.params.get("src", ""),
+                                                req.params.get("dst", ""))
+        return self._json(code, payload)
+
+    @route("report", "/api/report", methods=["GET"])
+    def report(self, req, **kwargs):
+        code, payload = self.app.handle_report(
+            req.params.get("src", "?")[:8], req.params.get("dst", "?")[:8],
+            req.params.get("status", "ok")[:8], req.params.get("seconds", "?")[:10],
+            req.params.get("bytes", "?")[:12])
+        return self._json(code, payload)
 
     @route("status", "/api/status", methods=["GET"])
     def status(self, req, **kwargs):

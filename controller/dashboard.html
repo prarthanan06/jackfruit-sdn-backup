@@ -108,6 +108,7 @@
   var HPOS = { h1: [70, 140], h2: [70, 300], h3: [830, 150], h4: [830, 290] };
   var selected = null;
   var lastData = null;
+  var lastActive = null;
 
   function el(name, attrs, text) {
     var e = document.createElementNS(NS, name);
@@ -221,6 +222,7 @@
     setBig("rr", rr, null, rr ? "bad" : "ok");
     setBig("np", np, null, np ? "bad" : "ok");
 
+    if (d.active && d.active !== lastActive) { selected = d.active; lastActive = d.active; }
     if (!selected && d.paths.length) { selected = pairKey(d.paths[0]); }
 
     var tb = document.getElementById("paths");
